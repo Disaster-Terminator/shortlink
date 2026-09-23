@@ -34,7 +34,7 @@ class ShortLinkStatsPersistenceServiceTest {
         service=ctx.getBean(ShortLinkStatsPersistenceService.class);
         os=ctx.getBean(LinkOsStatsMapper.class);
         jdbc.execute("CREATE TABLE stats_event(event_id VARCHAR(64) PRIMARY KEY)");
-        jdbc.execute("CREATE TABLE stats_counter(id INT PRIMARY KEY,value INT NOT NULL)");
+        jdbc.execute("CREATE TABLE stats_counter(id INT PRIMARY KEY,cnt INT NOT NULL)");
         jdbc.update("INSERT INTO stats_counter VALUES(1,0)");
     }
     @AfterEach void tearDown(){ctx.close();}
@@ -60,7 +60,7 @@ class ShortLinkStatsPersistenceServiceTest {
 
     private void persist(String id,ShortLinkStatsRecordDTO r){service.persist(id,"default",r,"未知","未知","未知",false);}
     private int eventCount(){return jdbc.queryForObject("SELECT COUNT(*) FROM stats_event",Integer.class);}
-    private int counter(){return jdbc.queryForObject("SELECT value FROM stats_counter WHERE id=1",Integer.class);}
+    private int counter(){return jdbc.queryForObject("SELECT cnt FROM stats_counter WHERE id=1",Integer.class);}
 
     @Configuration @EnableTransactionManagement
     static class Config {
@@ -74,7 +74,7 @@ class ShortLinkStatsPersistenceServiceTest {
         }
         @Bean LinkAccessStatsMapper access(JdbcTemplate j){
             LinkAccessStatsMapper m=mock(LinkAccessStatsMapper.class);
-            doAnswer(i->{j.update("UPDATE stats_counter SET value=value+1 WHERE id=1");return null;}).when(m).shortLinkStats(any());
+            doAnswer(i->{j.update("UPDATE stats_counter SET cnt=cnt+1 WHERE id=1");return null;}).when(m).shortLinkStats(any());
             return m;
         }
         @Bean LinkLocaleStatsMapper locale(){return mock(LinkLocaleStatsMapper.class);}
