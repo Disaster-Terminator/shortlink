@@ -21,12 +21,22 @@ spring:
       discovery:
         server-addr: 127.0.0.1:8848
 
+rocketmq:
+  name-server: ${ROCKETMQ_NAME_SERVER:127.0.0.1:9876}
+  producer:
+    group: ${ROCKETMQ_PRODUCER_GROUP:short-link-stats-producer}
+    send-message-timeout: 3000
+    retry-times-when-send-failed: 2
+
 short-link:
   domain:
     default: nurl.ink:8001
   stats:
     locale:
       amap-key: 824c511f0997586ea016f979fdb23087
+    mq:
+      topic: ${ROCKETMQ_STATS_TOPIC:short-link-stats}
+      consumer-group: ${ROCKETMQ_STATS_CONSUMER_GROUP:short-link-stats-consumer}
   goto-domain:
     white-list:
       enable: true

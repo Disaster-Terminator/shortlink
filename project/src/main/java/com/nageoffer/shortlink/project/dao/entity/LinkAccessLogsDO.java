@@ -41,6 +41,11 @@ public class LinkAccessLogsDO extends BaseDO {
     private Long id;
 
     /**
+     * 统计事件唯一标识，用于消费幂等
+     */
+    private String eventId;
+
+    /**
      * 完整短链接
      */
     private String fullShortUrl;

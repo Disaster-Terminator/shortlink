@@ -103,72 +103,70 @@ import static com.nageoffer.shortlink.project.common.constant.RedisKeyConstant.S
 @RequiredArgsConstructor
 public class ShortLinkServiceImpl extends ServiceImpl<ShortLinkMapper, ShortLinkDO> implements ShortLinkService {
 
+    private static final int CREATE_SHORT_LINK_MAX_ATTEMPTS = 10;
+
     private final RBloomFilter<String> shortUriCreateCachePenetrationBloomFilter;
     private final ShortLinkGotoMapper shortLinkGotoMapper;
     private final StringRedisTemplate stringRedisTemplate;
     private final RedissonClient redissonClient;
     private final ShortLinkStatsSaveProducer shortLinkStatsSaveProducer;
     private final GotoDomainWhiteListConfiguration gotoDomainWhiteListConfiguration;
+    private final ShortLinkCreatePersistenceService shortLinkCreatePersistenceService;
 
     @Value("${short-link.domain.default}")
     private String createShortLinkDefaultDomain;
 
-    @Transactional(rollbackFor = Exception.class)
     @Override
     public ShortLinkCreateRespDTO createShortLink(ShortLinkCreateReqDTO requestParam) {
-        // 短链接接口的并发量有多少？如何测试？详情查看：https://nageoffer.com/shortlink/question
         verificationWhitelist(requestParam.getOriginUrl());
-        String shortLinkSuffix = generateSuffix(requestParam);
-        String fullShortUrl = StrBuilder.create(createShortLinkDefaultDomain)
-                .append("/")
-                .append(shortLinkSuffix)
-                .toString();
-        ShortLinkDO shortLinkDO = ShortLinkDO.builder()
-                .domain(createShortLinkDefaultDomain)
-                .originUrl(requestParam.getOriginUrl())
-                .gid(requestParam.getGid())
-                .createdType(requestParam.getCreatedType())
-                .validDateType(requestParam.getValidDateType())
-                .validDate(requestParam.getValidDate())
-                .describe(requestParam.getDescribe())
-                .shortUri(shortLinkSuffix)
-                .enableStatus(0)
-                .totalPv(0)
-                .totalUv(0)
-                .totalUip(0)
-                .delTime(0L)
-                .fullShortUrl(fullShortUrl)
-                .favicon(getFavicon(requestParam.getOriginUrl()))
-                .build();
-        ShortLinkGotoDO linkGotoDO = ShortLinkGotoDO.builder()
-                .fullShortUrl(fullShortUrl)
-                .gid(requestParam.getGid())
-                .build();
-        try {
-            // 短链接项目有多少数据？如何解决海量数据存储？详情查看：https://nageoffer.com/shortlink/question
-            baseMapper.insert(shortLinkDO);
-            // 短链接数据库分片键是如何考虑的？详情查看：https://nageoffer.com/shortlink/question
-            shortLinkGotoMapper.insert(linkGotoDO);
-        } catch (DuplicateKeyException ex) {
-            // 首先判断是否存在布隆过滤器，如果不存在直接新增
-            if (!shortUriCreateCachePenetrationBloomFilter.contains(fullShortUrl)) {
-                shortUriCreateCachePenetrationBloomFilter.add(fullShortUrl);
+        String favicon = getFavicon(requestParam.getOriginUrl());
+        for (int attempt = 1; attempt <= CREATE_SHORT_LINK_MAX_ATTEMPTS; attempt++) {
+            String shortLinkSuffix = generateSuffix(requestParam);
+            String fullShortUrl = StrBuilder.create(createShortLinkDefaultDomain)
+                    .append("/")
+                    .append(shortLinkSuffix)
+                    .toString();
+            // Bloom Filter is only a fast negative filter. Database unique constraints remain the final arbiter.
+            if (mightContainShortUrl(fullShortUrl)) {
+                continue;
             }
-            throw new ServiceException(String.format("短链接：%s 生成重复", fullShortUrl));
+            ShortLinkDO shortLinkDO = ShortLinkDO.builder()
+                    .domain(createShortLinkDefaultDomain)
+                    .originUrl(requestParam.getOriginUrl())
+                    .gid(requestParam.getGid())
+                    .createdType(requestParam.getCreatedType())
+                    .validDateType(requestParam.getValidDateType())
+                    .validDate(requestParam.getValidDate())
+                    .describe(requestParam.getDescribe())
+                    .shortUri(shortLinkSuffix)
+                    .enableStatus(0)
+                    .totalPv(0)
+                    .totalUv(0)
+                    .totalUip(0)
+                    .delTime(0L)
+                    .fullShortUrl(fullShortUrl)
+                    .favicon(favicon)
+                    .build();
+            ShortLinkGotoDO linkGotoDO = ShortLinkGotoDO.builder()
+                    .fullShortUrl(fullShortUrl)
+                    .gid(requestParam.getGid())
+                    .build();
+            try {
+                shortLinkCreatePersistenceService.persist(shortLinkDO, linkGotoDO);
+            } catch (DuplicateKeyException ex) {
+                rememberShortUrlInBloom(fullShortUrl);
+                log.warn("短链接候选冲突，准备重试，attempt: {}, fullShortUrl: {}", attempt, fullShortUrl);
+                continue;
+            }
+            warmShortLinkCache(fullShortUrl, requestParam);
+            rememberShortUrlInBloom(fullShortUrl);
+            return ShortLinkCreateRespDTO.builder()
+                    .fullShortUrl("http://" + fullShortUrl)
+                    .originUrl(requestParam.getOriginUrl())
+                    .gid(requestParam.getGid())
+                    .build();
         }
-        // 项目中短链接缓存预热是怎么做的？详情查看：https://nageoffer.com/shortlink/question
-        stringRedisTemplate.opsForValue().set(
-                String.format(GOTO_SHORT_LINK_KEY, fullShortUrl),
-                requestParam.getOriginUrl(),
-                LinkUtil.getLinkCacheValidTime(requestParam.getValidDate()), TimeUnit.MILLISECONDS
-        );
-        // 删除短链接后，布隆过滤器如何删除？详情查看：https://nageoffer.com/shortlink/question
-        shortUriCreateCachePenetrationBloomFilter.add(fullShortUrl);
-        return ShortLinkCreateRespDTO.builder()
-                .fullShortUrl("http://" + shortLinkDO.getFullShortUrl())
-                .originUrl(requestParam.getOriginUrl())
-                .gid(requestParam.getGid())
-                .build();
+        throw new ServiceException("短链接频繁生成，请稍后再试");
     }
 
     @Override
@@ -492,29 +490,45 @@ public class ShortLinkServiceImpl extends ServiceImpl<ShortLinkMapper, ShortLink
     public void shortLinkStats(ShortLinkStatsRecordDTO statsRecord) {
         Map<String, String> producerMap = new HashMap<>();
         producerMap.put("statsRecord", JSON.toJSONString(statsRecord));
-        // 消息队列为什么选用RocketMQ？详情查看：https://nageoffer.com/shortlink/question
-        shortLinkStatsSaveProducer.send(producerMap);
+        try {
+            shortLinkStatsSaveProducer.send(producerMap);
+        } catch (Throwable ex) {
+            log.error("短链接统计消息发送失败，fullShortUrl: {}", statsRecord.getFullShortUrl(), ex);
+        }
+    }
+
+    private boolean mightContainShortUrl(String fullShortUrl) {
+        try {
+            return shortUriCreateCachePenetrationBloomFilter.contains(fullShortUrl);
+        } catch (Throwable ex) {
+            log.warn("布隆过滤器查询失败，降级为数据库唯一约束校验，fullShortUrl: {}", fullShortUrl, ex);
+            return false;
+        }
+    }
+
+    private void rememberShortUrlInBloom(String fullShortUrl) {
+        try {
+            shortUriCreateCachePenetrationBloomFilter.add(fullShortUrl);
+        } catch (Throwable ex) {
+            log.warn("布隆过滤器写入失败，不影响短链接数据库事实，fullShortUrl: {}", fullShortUrl, ex);
+        }
+    }
+
+    private void warmShortLinkCache(String fullShortUrl, ShortLinkCreateReqDTO requestParam) {
+        try {
+            stringRedisTemplate.opsForValue().set(
+                    String.format(GOTO_SHORT_LINK_KEY, fullShortUrl),
+                    requestParam.getOriginUrl(),
+                    LinkUtil.getLinkCacheValidTime(requestParam.getValidDate()), TimeUnit.MILLISECONDS
+            );
+        } catch (Throwable ex) {
+            log.warn("短链接缓存预热失败，不回滚数据库创建结果，fullShortUrl: {}", fullShortUrl, ex);
+        }
     }
 
     private String generateSuffix(ShortLinkCreateReqDTO requestParam) {
-        int customGenerateCount = 0;
-        String shorUri;
-        while (true) {
-            if (customGenerateCount > 10) {
-                throw new ServiceException("短链接频繁生成，请稍后再试");
-            }
-            String originUrl = requestParam.getOriginUrl();
-            originUrl += UUID.randomUUID().toString();
-            // 短链接哈希算法生成冲突问题如何解决？详情查看：https://nageoffer.com/shortlink/question
-            shorUri = HashUtil.hashToBase62(originUrl);
-            // 判断短链接是否存在为什么不使用Set结构？详情查看：https://nageoffer.com/shortlink/question
-            // 如果布隆过滤器挂了，里边存的数据全丢失了，怎么恢复呢？详情查看：https://nageoffer.com/shortlink/question
-            if (!shortUriCreateCachePenetrationBloomFilter.contains(createShortLinkDefaultDomain + "/" + shorUri)) {
-                break;
-            }
-            customGenerateCount++;
-        }
-        return shorUri;
+        String originUrlWithSalt = requestParam.getOriginUrl() + UUID.randomUUID();
+        return HashUtil.hashToBase62(originUrlWithSalt);
     }
 
     private String generateSuffixByLock(ShortLinkCreateReqDTO requestParam) {

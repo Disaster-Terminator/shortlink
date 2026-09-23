@@ -17,29 +17,41 @@
 
 package com.nageoffer.shortlink.project.mq.producer;
 
+import cn.hutool.core.lang.UUID;
 import lombok.RequiredArgsConstructor;
+import org.apache.rocketmq.client.producer.SendResult;
+import org.apache.rocketmq.client.producer.SendStatus;
+import org.apache.rocketmq.spring.core.RocketMQTemplate;
+import org.apache.rocketmq.spring.support.RocketMQHeaders;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.messaging.Message;
+import org.springframework.messaging.support.MessageBuilder;
 import org.springframework.stereotype.Component;
 
+import java.util.HashMap;
 import java.util.Map;
 
-import static com.nageoffer.shortlink.project.common.constant.RedisKeyConstant.SHORT_LINK_STATS_STREAM_TOPIC_KEY;
-
-/**
- * 短链接监控状态保存消息队列生产者
- * 公众号：马丁玩编程，回复：加群，添加马哥微信（备注：link）获取项目资料
- */
 @Component
 @RequiredArgsConstructor
 public class ShortLinkStatsSaveProducer {
 
-    private final StringRedisTemplate stringRedisTemplate;
+    public static final String EVENT_ID_FIELD = "eventId";
 
-    /**
-     * 发送延迟消费短链接统计
-     */
+    private final RocketMQTemplate rocketMQTemplate;
+
+    @Value("${short-link.stats.mq.topic}")
+    private String statsTopic;
+
     public void send(Map<String, String> producerMap) {
-        stringRedisTemplate.opsForStream().add(SHORT_LINK_STATS_STREAM_TOPIC_KEY, producerMap);
+        String eventId = UUID.fastUUID().toString(true);
+        Map<String, String> payload = new HashMap<>(producerMap);
+        payload.put(EVENT_ID_FIELD, eventId);
+        Message<Map<String, String>> message = MessageBuilder.withPayload(payload)
+                .setHeader(RocketMQHeaders.KEYS, eventId)
+                .build();
+        SendResult sendResult = rocketMQTemplate.syncSend(statsTopic, message);
+        if (sendResult == null || sendResult.getSendStatus() != SendStatus.SEND_OK) {
+            throw new IllegalStateException("RocketMQ message send failed, eventId=" + eventId);
+        }
     }
 }

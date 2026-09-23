@@ -649,6 +649,7 @@ CREATE TABLE `t_link_9`
 CREATE TABLE `t_link_access_logs`
 (
     `id`             bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `event_id`       varchar(64)  DEFAULT NULL COMMENT '统计事件唯一标识',
     `full_short_url` varchar(128) DEFAULT NULL COMMENT '完整短链接',
     `user`           varchar(64)  DEFAULT NULL COMMENT '用户信息',
     `ip`             varchar(64)  DEFAULT NULL COMMENT 'IP',
@@ -661,6 +662,7 @@ CREATE TABLE `t_link_access_logs`
     `update_time`    datetime     DEFAULT NULL COMMENT '修改时间',
     `del_flag`       tinyint(1) DEFAULT NULL COMMENT '删除标识 0：未删除 1：已删除',
     PRIMARY KEY (`id`),
+    UNIQUE KEY `idx_unique_event_id` (`event_id`) USING BTREE,
     KEY              `idx_full_short_url` (`full_short_url`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
