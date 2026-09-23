@@ -1,0 +1,20 @@
+name: Verify shortlink reliability
+
+on:
+  push:
+    branches:
+      - feat/shortlink-reliability
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - name: Run project tests
+        run: mvn -B -pl project -am test
